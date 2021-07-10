@@ -4,13 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
-	"l4d2bot/config"
+	"sync"
+
 	"regexp"
 	"strconv"
-	"sync"
 
 	"github.com/Mrs4s/MiraiGo/client"
 	"github.com/Mrs4s/MiraiGo/message"
+
 	log "github.com/sirupsen/logrus"
 )
 
@@ -19,18 +20,16 @@ var typeReg = regexp.MustCompile(`\[CQ:(\w+)`)
 var paramReg = regexp.MustCompile(`,([\w\-.]+?)=([^,\]]+)`)
 
 type QQBot struct {
-	Client          *client.QQClient
-	Config          *config.JsonConfig
-	friendReqCache  sync.Map
-	invitedReqCache sync.Map
-	joinReqCache    sync.Map
+	Client        *client.QQClient
+	Config        *JsonConfig
+	GameMapsCache sync.Map
 }
 type GroupMessage struct {
 	GroupId int64
 	Msg     string
 }
 
-func NewBot(cli *client.QQClient, cfg *config.JsonConfig) *QQBot {
+func NewBot(cli *client.QQClient, cfg *JsonConfig) *QQBot {
 	bot := &QQBot{Client: cli, Config: cfg}
 	bot.Client.OnGroupMessage(bot.groupMessageEvent)
 	bot.Client.OnGroupInvited(bot.groupInvitedEvent)
@@ -46,13 +45,11 @@ func (bot *QQBot) groupInvitedEvent(c *client.QQClient, e *client.GroupInvitedRe
 func (bot *QQBot) groupMessageEvent(c *client.QQClient, m *message.GroupMessage) {
 	for _, elem := range m.Elements {
 		if _, ok := elem.(*message.GroupFileElement); ok {
-			// fileUrl := c.GetGroupFileUrl(m.GroupCode, file.Path, file.Busid)
-			// log.Infof("上传了文件: %v", fileUrl)
 			return
 		}
 	}
 	cqm := ToStringMessage(m.Elements, m.GroupCode)
-	go l4d2Command(bot, cqm, m.GroupCode)
+	go bot.l4d2Command(cqm, m.GroupCode)
 }
 func ToGlobalId(code int64, msgId int32) int32 {
 	return int32(crc32.ChecksumIEEE([]byte(fmt.Sprintf("%d-%d", code, msgId))))
@@ -127,11 +124,6 @@ func (bot *QQBot) ConvertStringMessage(m string, group bool) (r []message.IMessa
 func (bot *QQBot) SendGroupMessage(groupId int64, msg string) int32 {
 	elem := bot.ConvertStringMessage(msg, false)
 	m := &message.SendingMessage{Elements: elem}
-	var newElem []message.IMessageElement
-	for _, elem := range m.Elements {
-		newElem = append(newElem, elem)
-	}
-	m.Elements = newElem
 	ret := bot.Client.SendGroupMessage(groupId, m)
 	return ToGlobalId(ret.GroupCode, ret.Id)
 }
@@ -154,6 +146,8 @@ func (bot *QQBot) getGroupFileUrl(groupId int64, filename string) (url string, e
 	}
 	return "", errors.New("找不到文件" + filename)
 }
-func (bot *QQBot) Release() {
+func (bot *QQBot) Close() {
+
+	bot.Client.Conn.Close()
 
 }

@@ -3,6 +3,7 @@ package core
 import (
 	"archive/zip"
 	"bytes"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"l4d2bot/utils"
@@ -10,42 +11,92 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
 	log "github.com/sirupsen/logrus"
+	"github.com/xv-chang/rconGo/core"
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
 )
 
 //处理- 开头命令
-func l4d2Command(bot *QQBot, msg string, groupCode int64) {
-	r := regexp.MustCompile(`^!(\w+)(.*)`)
-	matchs := r.FindStringSubmatch(msg)
-	if len(matchs) < 2 {
+func (bot *QQBot) l4d2Command(msg string, groupCode int64) {
+
+	msg = strings.TrimSpace(msg)
+	if !strings.HasPrefix(msg, "-") {
 		return
 	}
-	cmd := matchs[1]
+	matchs := strings.Split(msg, " ")
+	cmd := utils.GetStrArg(matchs, 0)
 	switch cmd {
-	case "wget":
-		if len(matchs) > 2 {
-			go wgetCmd(bot, groupCode, strings.Trim(matchs[2], " "))
-		}
-		break
-	case "restart":
-		go restartCmd(bot, groupCode)
-		break
-	case "url":
-		if len(matchs) > 2 {
-			go urlCmd(bot, groupCode, strings.Trim(matchs[2], " "))
-		}
+	case "-下载":
+		go bot.DownloadCmd(groupCode, matchs)
+	case "-重启":
+		go bot.RestartCmd(groupCode)
+	case "-服务器信息":
+		go bot.GetServerInfo(groupCode)
+	case "-玩家信息":
+		go bot.GetPlayers(groupCode)
+	case "-rcon":
+		go bot.ExecRCON(groupCode, matchs)
+	case "-文件地址":
+		go bot.UrlCmd(groupCode, matchs)
+	case "-查找地图":
+		go bot.SearchMapCmd(groupCode, matchs)
 	}
-	return
 }
 
-func urlCmd(bot *QQBot, groupCode int64, fileName string) {
+func (bot *QQBot) SearchMapCmd(groupCode int64, matchs []string) {
+	mapName := utils.GetStrArg(matchs, 1)
+	maps := GetMaps(mapName)
+	message := "查询结果：\n"
+	for _, item := range maps {
+		mapKey := "M_" + item.Id
+		bot.GameMapsCache.Store(mapKey, item)
+		message += mapKey + " " + item.Title + "\n"
+	}
+	bot.SendGroupMessage(groupCode, message)
+}
+func (bot *QQBot) GetServerInfo(groupCode int64) {
+	sq := core.NewServerQuery(bot.Config.ServerHost)
+	defer sq.Close()
+	info := sq.GetInfo()
+	message := fmt.Sprintf("服务器名称：%v \n", info.Name)
+	message += fmt.Sprintf("当前地图：%v \n", info.Map)
+	message += fmt.Sprintf("当前人数：%d/%d \n", info.Players, info.MaxPlayers)
+	bot.SendGroupMessage(groupCode, message)
+}
+func (bot *QQBot) GetPlayers(groupCode int64) {
+	sq := core.NewServerQuery(bot.Config.ServerHost)
+	defer sq.Close()
+	players := sq.GetPlayers()
+	message := fmt.Sprintf("玩家信息(%d)：", len(players))
+	for _, player := range players {
+		message += fmt.Sprintf("%v	%v\n", player.Name, player.Duration)
+	}
+	bot.SendGroupMessage(groupCode, message)
+}
+
+func (bot *QQBot) ExecRCON(groupCode int64, matchs []string) {
+	client := core.NewRCONClient(bot.Config.ServerHost, bot.Config.RCONPassword)
+	defer client.Close()
+	err := client.SendAuth()
+	if err != nil {
+		bot.SendGroupMessage(groupCode, "RCON 密码错误")
+		return
+	}
+	command := strings.Join(matchs[1:], " ")
+	r2, err := client.ExecCommand(command)
+	if err != nil {
+		bot.SendGroupMessage(groupCode, "认证失败")
+	}
+	bot.SendGroupMessage(groupCode, r2)
+}
+
+func (bot *QQBot) UrlCmd(groupCode int64, matchs []string) {
 	//根据文件名获取下载地址
+	fileName := utils.GetStrArg(matchs, 1)
 	url, err := bot.getGroupFileUrl(groupCode, fileName)
 	if err != nil {
 		bot.SendGroupMessage(groupCode, err.Error())
@@ -54,20 +105,14 @@ func urlCmd(bot *QQBot, groupCode int64, fileName string) {
 	bot.SendGroupMessage(groupCode, "下载地址为："+url)
 }
 
-func wgetCmd(bot *QQBot, groupCode int64, fileName string) {
-	//根据文件名获取下载地址
-	url, err := bot.getGroupFileUrl(groupCode, fileName)
-	if err != nil {
-		bot.SendGroupMessage(groupCode, err.Error())
-		return
-	}
+func (bot *QQBot) donwloadFile(groupCode int64, url string, fileName string) {
 	saveFileName := path.Join(bot.Config.AddonsDir, fileName)
 	//判断addons目录是否存在该文件
 	if utils.PathExists(saveFileName) {
 		bot.SendGroupMessage(groupCode, "服务器上文件已存在"+fileName)
 		return
 	}
-	bot.SendGroupMessage(groupCode, "正在下载文件，请耐心等待")
+	bot.SendGroupMessage(groupCode, "正在下载文件，请耐心等待,下载地址为:"+url)
 	//下载文件到addons 目录
 	downloadFile(url, saveFileName)
 	bot.SendGroupMessage(groupCode, "文件"+fileName+"已下载完毕")
@@ -78,10 +123,29 @@ func wgetCmd(bot *QQBot, groupCode int64, fileName string) {
 		time.Sleep(3 * time.Second)
 		removeFile(saveFileName)
 	}
-
 }
-func restartCmd(bot *QQBot, groupCode int64) {
-	err := utils.Command("sudo systemctl restart l4d2.service")
+
+func (bot *QQBot) DownloadCmd(groupCode int64, matches []string) {
+	var err error
+	url := utils.GetStrArg(matches, 1)
+	fileName := utils.GetStrArg(matches, 2)
+	if strings.HasPrefix(url, "M_") {
+		mapInfo, _ := bot.GameMapsCache.Load(url)
+		fileName = mapInfo.(*MapInfo).Title + ".zip"
+		url = GetDownloadURL(mapInfo.(*MapInfo).Url)
+	} else if !strings.HasPrefix(url, "http") {
+		fileName = url
+		url, err = bot.getGroupFileUrl(groupCode, url)
+		if err != nil {
+			bot.SendGroupMessage(groupCode, err.Error())
+			return
+		}
+	}
+	bot.donwloadFile(groupCode, url, fileName)
+}
+
+func (bot *QQBot) RestartCmd(groupCode int64) {
+	err := utils.Command("systemctl restart l4d2.service")
 	if err == nil {
 		bot.SendGroupMessage(groupCode, "服务已重启")
 	} else {
@@ -108,7 +172,6 @@ func unzipVPK(zipFile string, destDir string) error {
 	defer zipReader.Close()
 	var decodeName string
 	for _, f := range zipReader.File {
-
 		if f.Flags == 0 {
 			//如果标致位是0  则是默认的本地编码   默认为gbk
 			i := bytes.NewReader([]byte(f.Name))
@@ -120,7 +183,10 @@ func unzipVPK(zipFile string, destDir string) error {
 			decodeName = f.Name
 		}
 		if strings.HasSuffix(decodeName, ".vpk") {
-			newName := strings.Replace(decodeName, "/", "_", -1)
+			newName := strings.Replace(decodeName, ".vpk", "", -1)
+			newName = strings.Replace(newName, ".", "_", -1)
+			newName = strings.Replace(newName, "/", "_", -1)
+			newName = newName + ".vpk"
 			fpath := filepath.Join(destDir, newName)
 			inFile, err := f.Open()
 			if err != nil {
@@ -144,7 +210,6 @@ func unzipVPK(zipFile string, destDir string) error {
 }
 
 func removeFile(file string) {
-
 	err := os.Remove(file)
 	if err != nil {
 		log.Fatalf("删除文件 %v 出错: %v", file, err)

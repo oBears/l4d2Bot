@@ -1,11 +1,11 @@
 package main
 
 import (
-	"l4d2bot/config"
 	"l4d2bot/core"
 	"l4d2bot/utils"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/Mrs4s/MiraiGo/client"
@@ -13,7 +13,7 @@ import (
 )
 
 func main() {
-	conf := config.Load("config.json")
+	conf := core.LoadConfig("config.json")
 	if conf.Debug {
 		log.SetLevel(log.DebugLevel)
 		log.Warnf("已开启Debug模式.")
@@ -71,11 +71,11 @@ func main() {
 			}
 			return
 		}
-		b.Release()
+		b.Close()
 		log.Fatalf("Bot已离线：%v", e.Message)
 	})
 	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, os.Kill)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	<-c
-	b.Release()
+	b.Close()
 }

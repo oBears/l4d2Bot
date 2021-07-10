@@ -71,9 +71,25 @@ func (bot *QQBot) GetPlayers(groupCode int64) {
 	sq := core.NewServerQuery(bot.Config.ServerHost)
 	defer sq.Close()
 	players := sq.GetPlayers()
-	message := fmt.Sprintf("玩家信息(%d)：", len(players))
+	message := fmt.Sprintf("玩家信息(%d)：\n", len(players))
 	for _, player := range players {
-		message += fmt.Sprintf("%v	%v\n", player.Name, player.Duration)
+
+		time := []string{}
+		d := int(player.Duration)
+		hour := d / 3600
+		if hour > 0 {
+			time = append(time, fmt.Sprintf("%dh", hour))
+		}
+		min := (d % 3600) / 60
+		if min > 0 {
+			time = append(time, fmt.Sprintf("%dm", min))
+		}
+		second := d % 60
+		if second > 0 {
+			time = append(time, fmt.Sprintf("%ds", second))
+		}
+		dStr := strings.Join(time, " ")
+		message += fmt.Sprintf("%v\t%v\n", player.Name, dStr)
 	}
 	bot.SendGroupMessage(groupCode, message)
 }

@@ -148,6 +148,6 @@ func (bot *QQBot) getGroupFileUrl(groupId int64, filename string) (url string, e
 }
 func (bot *QQBot) Close() {
 
-	bot.Client.Conn.Close()
+	bot.Client.TCP.Close()
 
 }
